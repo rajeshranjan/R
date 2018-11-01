@@ -1,0 +1,6 @@
+rm(list=ls())
+data_12m = read.csv('./R/LIBOR/Canada/CAD12MD156N.csv')
+data_6m = read.csv('./R/LIBOR/Canada/CAD6MTD156N.csv')
+data_3m = read.csv('./R/LIBOR/Canada/CAD3MTD156N.csv')
+data_1m = read.csv('./R/LIBOR/Canada/CAD1MTD156N.csv')
+summary(data)
