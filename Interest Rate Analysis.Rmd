@@ -1,0 +1,1335 @@
+---
+title: "ANALYSIS OF INTEREST RATES (IR)"
+output:
+  pdf_document: default
+  html_notebook: default
+  html_document: default
+---
+
+<h2> 1. Project Description </h2>
+
+- Download USD and CAD LIBOR data for multiple tenors from FRED's web site
+- Check data for gaps, sudden jumps and other data quality issues
+- Plot time series of IRs and their 1-day and 30-day increments using either xtspackage
+- Plot histogram of IRs and their 1-day and 30-day increments,  and compare it to several distribution fits
+- Calculate and plot average term structure of IR and its standard deviation
+- Plot correlation matrix using corrplotpackage for correlation of the increments between various tenors
+- Calculate and plot three first principal components of IR. How much total variance do they explain?
+- Estimate the scaling factor between the 1-day and 30-day increments. How does it depend on the estimation time period?
+- Fit Vasicekmodel to each tenor using sdepackage
+- Join the fitted Vasicekmodels by using correlated Brownian motions simulated using the first three principal components
+- Enhance the model by replacing constant volatility assumption by a stochastic volatility model
+
+<h2> 2. Libor Rate Data Sources </h2>
+
+LIBOR interest rate data is obtained for the following terms: Over-night, 1-week, 1-month, 3-month, 6-month, and 1-year. The source of the data is the <a href = https://research.stlouisfed.org/> Federal Reserve Bank of St. Louis </a>.
+
+<h2> 3. Load Libraries and Set Global Parameters</h2>
+
+This project utilizes xts, ggplot2, and reshape2 packages. The xts package is useful for storing time series data. The ggplot2 package is a well known plotting package used to generate the graphs. The reshape2 package is used to structure data to allow for easier computation or plotting. Several other libraries, including fitdistrplus, yuima, Hmics etc. have been used to model interest rates and and anylze the behaviour and trends.
+
+
+```{r}
+rm(list=ls())
+options(warn=-1)
+```
+
+```{r Loading required libraries}
+packages =  c('ggplot2', 'corrplot', 'gridExtra', 'forecast', 'tseries', 'TSA', 'scatterplot3d',
+              'quantmod', 'factoextra', 'xts', 'dygraphs', 'assertthat', 'Quandl', 'bootstrap',
+              'sde','Hmisc','rgl','RColorBrewer', 'devtools', 'Sim.DiffProc','lubridate', 
+              'reshape', 'quantmod', 'reticulate','PerformanceAnalytics', 'fitdistrplus', 'yuima')
+
+my.install <- function(pkg, ...){
+  if (!(pkg %in% installed.packages()[,1])) {
+    install.packages(pkg)
+  }
+  return (library(pkg, ...))
+}
+
+purrr::walk(packages, my.install, character.only = TRUE, warn.conflicts = FALSE)
+
+currentDate <- Sys.Date() 
+eopm <- currentDate - days(day(currentDate)) 
+sopm <- currentDate - days(day(currentDate)) 
+sopm <- sopm - days(day(sopm) - 1) 
+```
+
+<h2> 4. Load Libor Data </h2>
+
+```{r Loading libor data}
+
+LIBOR = getSymbols(src="FRED",Symbols=c("USDONTD156N", "USD1WKD156N", "USD1MTD156N",
+                                         "USD2MTD156N", "USD3MTD156N", "USD6MTD156N", "USD12MD156N", 
+                                         "CADONTD156N","CAD1WKD156N","CAD1MTD156N",
+                                         "CAD2MTD156N","CAD3MTD156N","CAD6MTD156N","CAD12MD156N"))
+
+rates_USD = cbind(USDONTD156N, USD1WKD156N, USD1MTD156N, USD2MTD156N, USD3MTD156N, USD6MTD156N, USD12MD156N)
+rates_CDN = cbind(CADONTD156N, CAD1WKD156N, CAD1MTD156N, CAD2MTD156N, CAD3MTD156N, CAD6MTD156N, CAD12MD156N)
+rates = cbind(USD1MTD156N, USD2MTD156N, USD3MTD156N, USD6MTD156N, USD12MD156N)
+```
+<h2> 5. Data Overview </h2>
+
+```{r}
+summary(rates_USD)
+str(rates_USD)
+```
+
+```{r}
+summary(rates)
+str(rates)
+```
+
+<h2> 6. Data Cleaning </h2>
+
+```{r}
+rates_USD = na.approx(rates_USD)
+rates_CDN = na.approx(rates_CDN)
+rates = na.approx(rates)
+
+rates_USD[is.na(rates_USD)] = 0
+rates_CDN = na.omit(rates_CDN)
+rates = na.omit(rates)
+
+dataframe_USD = data.frame(index(rates_USD), rates_USD)
+dataframe_CDN = data.frame(index(rates_CDN), rates_CDN)
+dataframe = data.frame(index(rates), rates)
+
+colnames(dataframe_USD) = c('date', 'ON', '1WK', '1M', '2M', '3M', '6M', '12M')
+colnames(dataframe_CDN) = c('date', '1M', '2M', '3M', '6M', '12M')
+colnames(dataframe) = c('date', '1M', '2M', '3M', '6M', '12M')
+
+dataframe_USD$date = as.Date(dataframe_USD$date, format = "%Y-%m-%d")
+dataframe_CDN$date = as.Date(dataframe_CDN$date, format = "%Y-%m-%d")
+dataframe$date = as.Date(dataframe$date, format = "%Y-%m-%d")
+
+summary(dataframe)
+str(dataframe)
+```
+
+<h2> 7. Let's have a look at some univariate distributions </h2>
+
+<h3> 7.1. Interest Rate vs Time </h3>
+
+```{r}
+p1 = ggplot(dataframe_USD, aes(x = dataframe_USD$date, y = dataframe_USD$ON)) + geom_line() + xlab('Date') + ylab('LIBOR Rate') + ggtitle('Overnight Libor')
+p1
+```
+
+```{r}
+p3 = ggplot(dataframe_USD, aes(x = dataframe_USD$date, y = dataframe_USD$`1M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Month Libor')
+p3
+```
+
+
+```{r}
+options(repr.plot.width=12, repr.plot.height=12) 
+
+p2 = ggplot(dataframe_USD, aes(x = dataframe_USD$date, y = dataframe_USD$`1WK`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Week Libor')
+p4 = ggplot(dataframe_USD, aes(x = dataframe_USD$date, y = dataframe_USD$`2M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('2 Month Libor')
+p5 = ggplot(dataframe_USD, aes(x = dataframe_USD$date, y = dataframe_USD$`3M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('3 Month Libor')
+p6 = ggplot(dataframe_USD, aes(x = dataframe_USD$date, y = dataframe_USD$`6M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('6 Month Libor')
+p7 = ggplot(dataframe_USD, aes(x = dataframe_USD$date, y = dataframe_USD$`12M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Year Libor')
+
+grid.arrange(p1,p2,p3,p4,p5,p6,p7, nrow=3,ncol=3)
+
+```
+
+```{r}
+p1 = ggplot(dataframe_CDN, aes(x = dataframe_CDN$date, y = dataframe_CDN$`1M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Month Libor')
+p2 = ggplot(dataframe_CDN, aes(x = dataframe_CDN$date, y = dataframe_CDN$`2M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('2 Month Libor')
+p3 = ggplot(dataframe_CDN, aes(x = dataframe_CDN$date, y = dataframe_CDN$`3M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('3 Month Libor')
+p4 = ggplot(dataframe_CDN, aes(x = dataframe_CDN$date, y = dataframe_CDN$`6M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('6 Month Libor')
+p5 = ggplot(dataframe_CDN, aes(x = dataframe_CDN$date, y = dataframe_CDN$`12M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Year Libor')
+
+grid.arrange(p1,p2,p3,p4,p5, nrow=3,ncol=2)
+```
+
+```{r}
+p1 = ggplot(dataframe, aes(x = dataframe$date, y = dataframe$`1M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Month Libor')
+p2 = ggplot(dataframe, aes(x = dataframe$date, y = dataframe$`2M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('2 Month Libor')
+p3 = ggplot(dataframe, aes(x = dataframe$date, y = dataframe$`3M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('3 Month Libor')
+p4 = ggplot(dataframe, aes(x = dataframe$date, y = dataframe$`6M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('6 Month Libor')
+p5 = ggplot(dataframe, aes(x = dataframe$date, y = dataframe$`12M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Year Libor')
+
+grid.arrange(p1,p2,p3,p4,p5, nrow=3,ncol=2)
+```
+
+```{r}
+xtsdiff1 = diff(rates, differences=1)
+xtsdiff1 = na.exclude(xtsdiff1)
+dataframe_diff1 = fortify(xtsdiff1)
+
+p1 = ggplot(dataframe_diff1, aes(x = dataframe_diff1$Index, y = dataframe_diff1$USD1MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Month Libor')
+p2 = ggplot(dataframe_diff1, aes(x = dataframe_diff1$Index, y = dataframe_diff1$USD2MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('2 Month Libor')
+p3 = ggplot(dataframe_diff1, aes(x = dataframe_diff1$Index, y = dataframe_diff1$USD3MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('3 Month Libor')
+p4 = ggplot(dataframe_diff1, aes(x = dataframe_diff1$Index, y = dataframe_diff1$USD6MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('6 Month Libor')
+p5 = ggplot(dataframe_diff1, aes(x = dataframe_diff1$Index, y = dataframe_diff1$USD12MD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Year Libor')
+
+grid.arrange(p1,p2,p3,p4,p5, nrow=3,ncol=2)
+```
+
+```{r}
+xtsdiff30 = diff(rates, differences=1, lag = 30)
+xtsdiff30 = na.exclude(xtsdiff30)
+dataframe_diff30 = fortify(xtsdiff30)
+
+p1 = ggplot(dataframe_diff30, aes(x = dataframe_diff30$Index, y = dataframe_diff30$USD1MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Month Libor')
+p2 = ggplot(dataframe_diff30, aes(x = dataframe_diff30$Index, y = dataframe_diff30$USD2MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('2 Month Libor')
+p3 = ggplot(dataframe_diff30, aes(x = dataframe_diff30$Index, y = dataframe_diff30$USD3MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('3 Month Libor')
+p4 = ggplot(dataframe_diff30, aes(x = dataframe_diff30$Index, y = dataframe_diff30$USD6MTD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('6 Month Libor')
+p5 = ggplot(dataframe_diff30, aes(x = dataframe_diff30$Index, y = dataframe_diff30$USD12MD156N)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Year Libor')
+
+grid.arrange(p1,p2,p3,p4,p5, nrow=3,ncol=2)
+```
+
+<h4> We can clearly see two major jumps</h4>
+
+  1) Late 1980s - early 1990s:Throughout 1989 and 1990, the economy was weakening as a result of restrictive monetary policy enacted by the Federal Reserve
+  2) 2008 economic cricis: The Great Recession stemmed from collapse of the United States real-estate market, in relation to the financial crisis of 2007 to 2008 and U.S. subprime mortgage crisis of 2007 to 2009, though policies of other nations contributed also.
+  
+<h3> 7.2. Frequency Plot </h3>
+
+```{r}
+h1 = ggplot(dataframe, aes(dataframe$`1M`)) + geom_histogram(binwidth = 0.5) + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Month Libor')
+h2 = ggplot(dataframe, aes(dataframe$`2M`)) + geom_histogram(binwidth = 0.5) + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('2 Month Libor')
+h3 = ggplot(dataframe, aes(dataframe$`3M`)) + geom_histogram(binwidth = 0.5) + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('3 Month Libor')
+h4 = ggplot(dataframe, aes(dataframe$`6M`)) + geom_histogram(binwidth = 0.5) + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('6 Month Libor')
+h5 = ggplot(dataframe, aes(dataframe$`12M`)) + geom_histogram(binwidth = 0.5) + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Year Libor')
+
+grid.arrange(h1,h2,h3,h4,h5, nrow=3,ncol=2)
+```
+
+<h4> Let's take the first order difference and see how the frequency plot looks with a lag of 1 and 30 </h4>
+
+```{r}
+h1 = ggplot(xtsdiff1, aes(xtsdiff1$USD1MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Month Libor')
+h2 = ggplot(xtsdiff1, aes(xtsdiff1$USD2MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('2 Month Libor')
+h3 = ggplot(xtsdiff1, aes(xtsdiff1$USD3MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('3 Month Libor')
+h4 = ggplot(xtsdiff1, aes(xtsdiff1$USD6MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('6 Month Libor')
+h5 = ggplot(xtsdiff1, aes(xtsdiff1$USD12MD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Year Libor')
+
+grid.arrange(h1,h2,h3,h4,h5, nrow=3,ncol=2)
+```
+
+```{r}
+h1 = ggplot(xtsdiff30, aes(xtsdiff30$USD1MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Month Libor')
+h1
+```
+
+```{r}
+h5 = ggplot(xtsdiff30, aes(xtsdiff30$USD12MD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Year Libor')
+h5
+```
+
+
+```{r}
+h2 = ggplot(xtsdiff30, aes(xtsdiff30$USD2MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('2 Month Libor')
+h3 = ggplot(xtsdiff30, aes(xtsdiff30$USD3MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('3 Month Libor')
+h4 = ggplot(xtsdiff30, aes(xtsdiff30$USD6MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('6 Month Libor')
+
+grid.arrange(h1,h2,h3,h4,h5, nrow=3,ncol=2)
+```
+
+
+```{r}
+rates_resampled = period.apply(rates, endpoints(rates, k=2, "week"), mean)
+xtsdiff1_resampled = diff(rates_resampled, differences=1)
+```
+
+```{r}
+# h1 = ggplot(xtsdiff1_resampled, aes(xtsdiff1_resampled$USD1MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Month Libor')
+# h1
+```
+
+
+```{r}
+# h2 = ggplot(xtsdiff1_resampled, aes(xtsdiff1_resampled$USD2MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('2 Month Libor')
+# h2
+```
+
+```{r}
+# h3 = ggplot(xtsdiff1_resampled, aes(xtsdiff1_resampled$USD3MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('3 Month Libor')
+# h4 = ggplot(xtsdiff1_resampled, aes(xtsdiff1_resampled$USD6MTD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('6 Month Libor')
+# h5 = ggplot(xtsdiff1_resampled, aes(xtsdiff1_resampled$USD12MD156N)) + geom_histogram() + xlab('Interest Rate') + ylab('Frequency')+ ggtitle('1 Year Libor')
+# 
+# grid.arrange(h1,h2,h3,h4,h5, nrow=3,ncol=2)
+```
+
+```{r}
+normal_dist <- fitdist(dataframe_diff1$USD1MTD156N, "norm")
+plot(normal_dist)
+```
+
+<h4> Cullen Frey diagram for first order difference with a lag of 1 </h4>
+
+```{r}
+descdist(dataframe_diff1$USD1MTD156N, boot = 1000)
+```
+
+```{r}
+descdist(dataframe_diff1$USD12MD156N, boot = 1000)
+```
+
+```{r}
+# fw = fitdist(dataframe_diff1$USD1MTD156N, "weibull")
+# fg = fitdist(dataframe_diff1$USD1MTD156N, "gamma")
+# fln = fitdist(dataframe_diff1$USD1MTD156N, "lnorm")
+# par(mfrow = c(2, 2))
+# plot.legend = c("Weibull", "lognormal", "gamma")
+# denscomp(list(fw, fln, fg), legendtext = plot.legend)
+# qqcomp(list(fw, fln, fg), legendtext = plot.legend)
+# cdfcomp(list(fw, fln, fg), legendtext = plot.legend)
+# ppcomp(list(fw, fln, fg), legendtext = plot.legend)
+```
+
+```{r}
+normal_dist <- fitdist(dataframe_diff30$USD1MTD156N, "norm")
+plot(normal_dist)
+```
+
+
+<h4> Cullen Frey diagram for first order difference with a lag of 30 </h4>
+
+```{r}
+descdist(dataframe_diff30$USD1MTD156N, boot = 1000)
+```
+
+```{r}
+descdist(dataframe_diff30$USD12MD156N, boot = 1000)
+```
+
+<h3> 7.3. Average Term Strutures and Standard Deviations </h3>
+
+```{r}
+avg_term_struct = colMeans(rates, na.rm = TRUE)
+plot(avg_term_struct, xlab = "Term", xaxt = "n", type='o-')
+label.term <- c("1M","2M","3M","6M","1Y")
+axis(1, at=1:5, labels=label.term)
+```
+
+```{r}
+avg_term_sd = sapply(rates, sd, na.rm = TRUE)
+plot(avg_term_sd, xlab = "Term", xaxt = "n", type='o-')
+label.term <- c("1M","2M","3M","6M","1Y")
+axis(1, at=1:5, labels=label.term)
+```
+
+```{r}
+category = c("1M","2M","3M","6M","1Y")
+value.of.point = avg_term_struct
+error.bar.length = avg_term_sd
+
+df <- data.frame(category,
+                 value.of.point,
+                 error.bar.length)
+
+errbar(x = c(1,2,3,4,5),
+       y = df$value.of.point, 
+       yplus = df$value.of.point +  
+               df$error.bar.length,
+       ymin = df$value.of.point -   
+               df$error.bar.length,
+       xaxt = "n",          
+       xlim = c(0.75,5.25),      
+       xlab = "Term",   
+       ylab = "Average Interest Rate (%)",
+       type='o-')  
+       
+axis(side=1,        
+     at=c(1,2,3,4,5),  
+     labels=df$category)
+
+legend("topleft", legend = "Error bars = +/- 1 SE", bty = "n")
+```
+
+<h2> 8. Time Series Analysis</h2>
+
+<h3> 8.1. What is AutoRegressive or AR model: </h3>
+
+Autoregressive (AR) models are models where the value of variable in one period is related to the values in the previous period. AR(p) is a Autoregressive model with p lags.
+
+<h3> 8.2. What is Moving Average or MA model: </h3>
+
+Moving average (MA) model accounts for the possibility of a relationship between a variable and the residual from the previous period. MA(q) is a Moving Average model with q lags.
+
+<h3> 8.3. What is ARMA model: </h3>
+
+Autoregressive moving average model combines both p auto regressive terms and q Moving average terms, also called ARMA(p,q)
+
+<h2> 9. Create and Plot Time Series </h2>
+
+```{r}
+dygraph(rates_USD, main = "Libor Dynamic Graph") %>%
+  dyOptions(colors = RColorBrewer::brewer.pal(7, "Set2"))%>%
+  dyShading(from="1986-01-02", to="2001-01-01", color="#FFE6E6") %>%
+  dyShading(from="1986-01-02", to="1997-01-01", color="#94E0DF") %>%
+  dyRangeSelector()
+```
+
+<h2> 10. Stationarity </h2>
+
+<h3> What is stationary time series? </h3>
+
+A stationary process has a mean and variance that do not change overtime and the process does not have trend.
+
+The above time series does not look stationary.
+
+To confirm that we will use "Dickey-Fuller test" to determine stationarity.
+
+Dickey-Fuller test for variable
+```{r}
+adf.test(rates$USD1MTD156N, alternative = "stationary")
+```
+
+<h2> 11. Decomposing Time Series </h2>
+
+Decomposing a time series means separating it into it's constituent components, which are often a trend component and a random component, and if the data is seasonal, a seasonal component (for examaple holiday sales). For the interest rate data there seasonality would not be a important factor.
+
+Decomposing non-Seasonal series consist of a trend component and a random component. Decomposing the time series involves tying to separate the time series into these individual components.
+
+One way to do this is using some smoothing method, such as a simple moving average. The SMA() function in the TTR R package can be used to smooth time series data using a moving average. The SMA function takes a span argument as n order. To calculate the moving average of order 5, we set n = 5.
+
+```{r}
+USD1MTD156N_MA = SMA(rates$USD1MTD156N, n=10)
+plot.xts(USD1MTD156N_MA)
+```
+
+```{r}
+USD1MTD156N_MA = SMA(rates$USD1MTD156N, n=100)
+plot.xts(USD1MTD156N_MA)
+```
+
+This is better, we can see all the the hills and valleys.
+
+```{r}
+USD1MTD156N_ts = ts(rates$USD1MTD156N, frequency = 12*(2008-1987))
+USD1MTD156N_comp_add = decompose(USD1MTD156N_ts, type = 'additive')
+plot(USD1MTD156N_comp_add, col = "red")
+```
+
+<h3> 11.1. Seasonality Adjusting </h3>
+
+If we have a seasonal time series, we can seasonally adjust the series by estimating the seasonal component, and subtracting it from the original time series. We can see below that time series simply consists of the trend and random components. For interest rate data this step is not required.
+
+<h2> 12. Differencing a Time Series </h3>
+
+Differencing is a common solution used to stationarize the variable. We will perform differencing using R function diff.
+
+```{r}
+plot.xts(xtsdiff1, col=rainbow(5), legend.loc = c("topright"))
+```
+
+```{r}
+plot.xts(xtsdiff30, col=rainbow(5), legend.loc = c("topright"))
+```
+
+
+```{r}
+plot.xts(xtsdiff1_resampled, col=rainbow(5), legend.loc = c("topright"))
+```
+
+```{r}
+adf.test(na.exclude(xtsdiff30$USD1MTD156N), alternative = "stationary")
+```
+
+<h2> 13. Selecting a Candidate ARIMA Model </h2>
+
+The next step is to select appropriate ARIMA model, which means finding the most appropriate values of p and q for an ARIMA(p,d,q) model. You usually need to examine the correlogram and partial correlogram of the stationary time series for this. '
+
+To plot a correlogram and partial correlogram, we can use the acf() and pacf() functions in R, respectively.
+
+```{r}
+Acf(xtsdiff30$USD1MTD156N,lag.max=60, main ='ACF for the Differenced Series')             # plot a correlogram
+```
+
+```{r}
+Acf(xtsdiff30$USD1MTD156N, lag.max=60, plot=FALSE) # get the autocorrelation values
+```
+
+```{r}
+Pacf(xtsdiff30$USD1MTD156N, lag.max=60)             # plot a partial correlogram
+```
+
+```{r}
+Pacf(xtsdiff30$USD1MTD156N, lag.max=60, plot=FALSE) # get the partial autocorrelation values
+```
+
+<h2> 14. Fitting an ARIMA Model </h2>
+
+R provides a function auto.arima, which returns best ARIMA model according to either AIC, AICc or BIC value. The function conducts a search over possible model within the order constraints provided.
+
+We train 3 models with different training data. For example, the model 'tsarima240' is trained with the whole time series exluding the last 240 data.
+
+```{r}
+tsarima40 = auto.arima(head(rates_resampled$USD1MTD156N, -40)) # excluding last 40 time series as test data
+print(tsarima40)
+```
+
+```{r}
+autoplot(tsarima40)
+```
+
+```{r}
+tsarima20 = auto.arima(head(rates_resampled$USD1MTD156N, -20)) # excluding last 20 time series as test data
+print(tsarima20)
+```
+
+```{r}
+autoplot(tsarima20)
+```
+
+```{r}
+tsarima10 = auto.arima(head(rates_resampled$USD1MTD156N, -10)) # excluding last 60 time series as test data
+print(tsarima10)
+```
+
+```{r}
+autoplot(tsarima10)
+```
+
+<h2> 15. Forecasting using ARIMA </h2>
+
+```{r}
+tsforecasts40 = forecast(tsarima40, h = 40) # forecast the next 40 time series
+tsforecasts20 = forecast(tsarima20, h = 20) # forecast the next 20 time series
+tsforecasts10 = forecast(tsarima10, h = 10) # forecast the next 10 time series
+
+autoplot(tsforecasts40)
+```
+
+```{r}
+accuracy(tsforecasts40, head(tail(rates_resampled$USD1MTD156N, 40), 40))
+```
+
+```{r}
+accuracy(tsforecasts40, head(tail(rates_resampled$USD1MTD156N, 40), 20))
+```
+
+```{r}
+accuracy(tsforecasts40, head(tail(rates_resampled$USD1MTD156N, 40), 10))
+```
+
+```{r}
+autoplot(tsforecasts20)
+```
+
+```{r}
+accuracy(tsforecasts20, head(tail(rates_resampled$USD1MTD156N, 20), 20))
+```
+
+```{r}
+accuracy(tsforecasts20, head(tail(rates_resampled$USD1MTD156N, 20), 10))
+```
+
+```{r}
+autoplot(tsforecasts10)
+```
+
+```{r}
+accuracy(tsforecasts10, head(tail(rates_resampled$USD1MTD156N, 5), 5))
+```
+
+```{r}
+print('tsforecasts40')
+```
+
+```{r}
+ggplot(data.frame(residuals = tsforecasts40$residuals), aes(residuals)) + geom_histogram(bins = 50, aes(y = ..density..), col = "red", fill = "red", alpha = 0.3) + geom_density()# make a histogram
+```
+
+```{r}
+checkresiduals(tsforecasts40)
+```
+
+
+```{r}
+print('tsforecasts20')
+```
+
+```{r}
+ggplot(data.frame(residuals = tsforecasts20$residuals), aes(residuals)) + geom_histogram(bins = 50, aes(y = ..density..), col = "red", fill = "red", alpha = 0.3) + geom_density()# make a histogram
+```
+
+```{r}
+checkresiduals(tsforecasts20)
+```
+
+
+```{r}
+print('tsforecasts10')
+```
+
+```{r}
+ggplot(data.frame(residuals = tsforecasts10$residuals), aes(residuals)) + geom_histogram(bins = 50, aes(y = ..density..), col = "red", fill = "red", alpha = 0.3) + geom_density()# make a histogram
+```
+
+```{r}
+checkresiduals(tsforecasts10)
+```
+
+<h2> 16. Correlation Plots and Matrices </h2>
+
+```{r}
+res1 = rcorr(rates_USD, type = c("pearson","spearman"))
+```
+
+```{r}
+# Extract the correlation coefficients
+res1$r
+```
+
+```{r}
+# Extract p-values
+res1$P
+```
+
+```{r}
+res2 = rcorr(xtsdiff1, type = c("pearson","spearman"))
+```
+
+```{r}
+# Extract the correlation coefficients
+res2$r
+```
+
+```{r}
+# Extract p-values
+res2$P
+```
+
+```{r}
+res3 = rcorr(xtsdiff30, type = c("pearson","spearman"))
+```
+
+```{r}
+# Extract the correlation coefficients
+res3$r
+```
+
+```{r}
+# Extract p-values
+res3$P
+```
+
+```{r}
+# ++++++++++++++++++++++++++++
+# flattenCorrMatrix
+# ++++++++++++++++++++++++++++
+# cormat : matrix of the correlation coefficients
+# pmat : matrix of the correlation p-values
+flattenCorrMatrix = function(cormat, pmat) {
+  ut = upper.tri(cormat)
+  data.frame(
+    row = rownames(cormat)[row(cormat)[ut]],
+    column = rownames(cormat)[col(cormat)[ut]],
+    cor  =(cormat)[ut],
+    p = pmat[ut]
+    )
+}
+```
+
+```{r}
+res1 = rcorr(as.matrix(rates_USD[,]))
+flattenCorrMatrix(res1$r, res1$P)
+```
+
+<h3> 16.1. Correlation Plots </h3>
+
+```{r}
+# Insignificant correlations are leaved blank
+corrplot(res1$r, type="upper", order="hclust", 
+         p.mat = res1$P, sig.level = 0.01, insig = "blank")
+```
+
+```{r}
+# Insignificant correlations are leaved blank
+corrplot(res2$r, type="upper", order="hclust", 
+         p.mat = res2$P, sig.level = 0.01, insig = "blank")
+```
+
+```{r}
+# Insignificant correlations are leaved blank
+corrplot(res3$r, type="upper", order="hclust", 
+         p.mat = res3$P, sig.level = 0.01, insig = "blank")
+```
+
+<h3> 16.2. Correlation Chart </h3>
+
+```{r}
+chart.Correlation(xtsdiff1, histogram=TRUE, pch=19)
+```
+
+```{r}
+chart.Correlation(xtsdiff30, histogram=TRUE, pch=19)
+```
+
+<h3> 16.3. Heatmap and Hierachical Clustering </h3>
+
+```{r}
+# Get some colors
+col = colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = res1$r, col = col, symm = TRUE)
+```
+
+```{r}
+# Get some colors
+col = colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = res2$r, col = col, symm = TRUE)
+```
+
+```{r}
+# Get some colors
+col = colorRampPalette(c("blue", "white", "red"))(20)
+heatmap(x = res3$r, col = col, symm = TRUE)
+```
+
+<h2> 17. An investigation into rates modelling: PCA and Vasicek models </h2>
+
+Interest rates provide a fairly good standard for applying PCA and Vasicek stochastic modelling, and getting a good feel for the characteristics of these models.
+
+<h3> 17.1. Principal Component Analysis - Covariance Method </h3>
+
+Implementing the PCA covariance algorithm is quite straight forward.
+
+  1. Detrend the dataset by removing the mean of each column from our observations
+  2. Calculate the covariance/correlation matrix
+  3. Calculate the eigenvectors & eigenvalues which diagonalise the covariance/correlation matrix.
+  4. Sort eigenvectors and eigenvalues based on decreasing eigenvalues (i.e. we take the eigenvalue contributing the most variance to out dataset as the first eigenvalue and so forth)
+
+```{r}
+# SVD of the (scaled) data matrix; the name `v` is the matrix of PCs as column vectors
+svd(scale(na.exclude(xtsdiff1)))$v
+```
+
+```{r}
+# Spectral decomp. of the covariance/ correlation matrix;
+# `vectors` has matrix of PCs as column vectors
+eigen(cor(na.exclude(xtsdiff1)))$vectors
+```
+
+```{r}
+# Built-in tool for PCA; `rotation` has matrix of PCs as column vectors
+prcomp(na.exclude(xtsdiff1), scale. = T)$rotation
+```
+
+```{r}
+# Built-in tool for PCA; `rotation` has matrix of PCs as column vectors
+prcomp(na.exclude(xtsdiff30), scale. = T)$rotation
+```
+
+<h3> 17.2. PCA Plots and Variance Explained </h3>
+
+```{r}
+xtsdiff1_USD = diff(rates_USD, differences = 1)
+prin_comp = prcomp(na.exclude(xtsdiff1_USD), scale. = T, cor=TRUE)
+names(prin_comp)
+dim(prin_comp$x)
+biplot(prin_comp, scale = 0)
+```
+
+```{r}
+prin_comp = prcomp(na.exclude(xtsdiff1), scale. = T)
+names(prin_comp)
+dim(prin_comp$x)
+biplot(prin_comp, scale = 0)
+```
+
+```{r}
+#compute standard deviation of each principal component
+std_dev = prin_comp$sdev
+
+#compute variance
+pr_var = std_dev^2
+
+#check variance of first 3 components
+pr_var[1:3]
+
+#proportion of variance explained
+prop_varex = pr_var/sum(pr_var)
+prop_varex[1:3]
+```
+
+```{r}
+#scree plot
+plot(prop_varex, xlab = "Principal Component",
+             ylab = "Proportion of Variance Explained",
+             type = "b")
+```
+
+```{r}
+#cumulative scree plot
+plot(cumsum(prop_varex), xlab = "Principal Component",
+              ylab = "Cumulative Proportion of Variance Explained",
+              type = "b")
+```
+
+```{r}
+prin_comp = prcomp(na.exclude(xtsdiff30), scale. = T)
+names(prin_comp)
+dim(prin_comp$x)
+biplot(prin_comp, scale = 0)
+```
+
+```{r}
+#compute standard deviation of each principal component
+std_dev = prin_comp$sdev
+
+#compute variance
+pr_var = std_dev^2
+
+#check variance of first 3 components
+pr_var[1:3]
+
+#proportion of variance explained
+prop_varex = pr_var/sum(pr_var)
+prop_varex[1:3]
+```
+
+```{r}
+#scree plot
+plot(prop_varex, xlab = "Principal Component",
+             ylab = "Proportion of Variance Explained",
+             type = "b")
+```
+
+```{r}
+#cumulative scree plot
+plot(cumsum(prop_varex), xlab = "Principal Component",
+              ylab = "Cumulative Proportion of Variance Explained",
+              type = "b")
+```
+
+<h3> 17.3. Yield Curves </h3>
+
+One of the key interpretations of PCA applied to interest rates, is the components of the yield curve. We can effectively attribute the first three principal components to:
+
+  1. Parallel shifts in yield curve (shifts across the entire yield curve)
+  2. Changes in short/long rates (i.e. steepening/flattening of the curve)
+  3. Changes in curvature of the model (twists)
+  
+
+```{r}
+label.term = c("1M","2M","3M","6M","1Y")
+term.structure = rates
+term.structure.diff = diff(term.structure,differences=1)
+term.structure.princomp<- princomp(na.exclude(term.structure.diff))
+factor.loadings = term.structure.princomp$loadings[,1:3]
+legend.loadings = c("First principal component","Second principal component","Third principal component")
+par(xaxt="n")
+matplot(factor.loadings,type="l",
+  lwd=3,lty=1,xlab = "Term", ylab = "Factor loadings")
+legend(4,max(factor.loadings),legend=legend.loadings,col=1:3,lty=1,lwd=3)
+par(xaxt="s")
+axis(1,1:length(label.term),label.term)
+```
+
+```{r}
+label.term <- c("1M","2M","3M","6M","1Y")
+term.structure = rates
+term.structure.diff = diff(term.structure,differences=1, lag=30)
+term.structure.princomp = princomp(na.exclude(term.structure.diff))
+factor.loadings = term.structure.princomp$loadings[,1:3]
+legend.loadings = c("First principal component","Second principal component","Third principal component")
+par(xaxt="n")
+matplot(factor.loadings,type="l",
+  lwd=3,lty=1,xlab = "Term", ylab = "Factor loadings")
+legend(4,max(factor.loadings),legend=legend.loadings,col=1:3,lty=1,lwd=3)
+par(xaxt="s")
+axis(1,1:length(label.term),label.term)
+```
+
+<h3> 17.4. Reconstructing the initial dataset </h3>
+
+One of the key features of PCA is the ability to reconstruct the initial dataset using the outputs of PCA. Using the simple matrix reconstruction, we can generate an approximation/almost exact replica of the initial data.
+
+```{r}
+term.structure.princomp<- prcomp(term.structure)
+rateshat = term.structure.princomp$x %*% t(term.structure.princomp$rotation)
+```
+
+```{r}
+dataframe_r = data.frame(index(rateshat), rateshat)
+colnames(dataframe_r) = c('date', '1M', '2M', '3M', '6M', '12M')
+dataframe_r$date = as.Date(dataframe$date, format = "%Y-%m-%d")
+```
+
+```{r}
+p1 = ggplot(dataframe_r, aes(x = dataframe_r$date, y = dataframe_r$`1M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Month Libor')
+p1
+```
+
+```{r}
+p2 = ggplot(dataframe_r, aes(x = dataframe_r$date, y = dataframe_r$`2M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('2 Month Libor')
+p2
+```
+
+```{r}
+p3 = ggplot(dataframe_r, aes(x = dataframe_r$date, y = dataframe_r$`3M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('3 Month Libor')
+p4 = ggplot(dataframe_r, aes(x = dataframe_r$date, y = dataframe_r$`6M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('6 Month Libor')
+p5 = ggplot(dataframe_r, aes(x = dataframe_r$date, y = dataframe_r$`12M`)) + geom_line() + xlab('Date') + ylab('LIBOR Rate')+ ggtitle('1 Year Libor')
+grid.arrange(p1,p2,p3,p4,p5, nrow=3,ncol=2)
+```
+
+```{r}
+par(mfrow = c(3, 2))
+for (i in 1:5){
+    plot(dataframe_r$date, term.structure.princomp$x[,i])
+}
+
+```
+
+```{r}
+s3d = scatterplot3d(term.structure.princomp$x[,1],term.structure.princomp$x[,2],term.structure.princomp$x[,3], pch=16, highlight.3d=TRUE, main="3D Scatterplot")
+fit = lm(term.structure.princomp$x[,3] ~ term.structure.princomp$x[,1]+term.structure.princomp$x[,2]) 
+s3d$plane3d(fit)
+```
+
+```{r}
+makeProfilePlot <- function(mylist,names)
+  {
+     require(RColorBrewer)
+     # find out how many variables we want to include
+     numvariables = length(mylist)
+     # choose 'numvariables' random colours
+     colours <- brewer.pal(numvariables,"Set1")
+     # find out the minimum and maximum values of the variables:
+     mymin <- 1e+20
+     mymax <- 1e-20
+     for (i in 1:numvariables)
+     {
+        vectori = mylist[[i]]
+        mini = min(vectori)
+        maxi = max(vectori)
+        if (mini < mymin) { mymin <- mini }
+        if (maxi > mymax) { mymax <- maxi }
+     }
+     # plot the variables
+     for (i in 1:numvariables)
+     {
+        vectori = mylist[[i]]
+        namei = names[i]
+        colouri = colours[i]
+        if (i == 1) { plot(vectori,col=colouri,type="l",ylim=c(mymin,mymax)) }
+        else         { points(vectori, col=colouri,type="l")                                     }
+        lastxval = length(vectori)
+        lastyval = vectori[length(vectori)]
+        text((lastxval-10),(lastyval),namei,col="black",cex=0.6)
+     }
+  }
+```
+
+```{r}
+names = c("PC1","PC2","PC3","PC4","PC5")
+mylist = list(term.structure.princomp$x[,1], term.structure.princomp$x[,2], term.structure.princomp$x[,3], term.structure.princomp$x[,4], term.structure.princomp$x[,5])
+makeProfilePlot(mylist,names)
+```
+
+We see that the first 3 principal components account for almost all of the variance in the model, and thus we should just be able to use these three components to reconstruct our initial dataset and retain most of the characteristics of it.
+
+<h3> 17.5. Rates Simulation </h3>
+
+We can use a pretty basic stochastic model, the Vasicek short-rate model to simulate out spreads. The typical implementation uses MLE to derive out the key parameters of the model. 
+
+\[ dX_t = (\theta_1 - \theta_2X_t)dt +\theta_3dW_t, X_0 = x_0 \]
+
+\( (\theta_1 - \theta_2X_t)dt \) is deterministic part; \( \theta_3dW_t \) is stochastic part.
+
+\( dW_t \) is the Brownian motion, which follows random normal distributioin \( N(0,t) \).
+
+\( (\theta_1 - \theta_2X_t) \) is drift; \( \theta_3 \) is diffusion.
+
+In finance, the model more often is written as:
+
+\[ dS_t = \theta(\mu - S_t)dt + \sigma dW_t \]
+
+where \( \sigma \) is interpreted as the instantaneous volatility , \( \sigma^2/(2\theta) \) is the long term variance; \( \mu \) is the long-run equilibrium value of the process, and \( \theta \) is the speed of reversion.
+
+\( \theta \) increases the speed at which the system stabilizes around the long term mean \( \mu \).
+
+\( \sigma \) increases the amount of randomness entering the system.
+
+The basic approach is to calibrate kappa, theta and sigma based on a historical dataset and then use it in Monte Carlo modelling of rate paths.
+
+<h4> Helper functions </h4>
+
+```{r}
+####
+# R script for simulationg bond short rates with the Vasicek model. It includes
+# functions to calibrate the Vasicek model, run simulations and derive yield
+# curves. 
+
+VasicekHelper = function(r, kappa, theta, sigma, dt = 1/252) {
+  # Helper function that calculates the next rate based on the discretization
+  # of the Varice model. 
+  #
+  # Args: 
+  #   r: The interest rate used to generate the next interest rate.
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of simulated short rates. 
+  term1 = exp(-1 * kappa * dt)
+  term2 = (sigma^2) * (1 - term1^2) / (2*kappa)
+  result = r*term1 + theta*(1-term1) + sqrt(term2)*rnorm(n=1)
+  return(result)
+}
+
+VasicekSimulation = function(N, r0, kappa, theta, sigma, dt = 1/252) {
+  # Generates a single short rate simulation using the Vasicek model.
+  #
+  # Args: 
+  #   N: The number of points to generate in each simulation. For example, 
+  #      the number of days when simulating daily rates.
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of simulated short rates. 
+
+  short.rates = rep(0, N)
+  short.rates[1] = r0
+  for (i in 2:N) {
+    short.rates[i] = VasicekHelper(short.rates[i - 1], kappa, theta, sigma, dt)
+  }
+  return(short.rates)
+}
+
+VasicekSimulations = function(M, N, r0, kappa, theta, sigma, dt = 1/252) {
+  # Generates several short rate simulations using the Vasicek model.
+  #
+  # Args: 
+  #   M: The number of simulations to run. 
+  #   N: The number of points to generate in each simulation. For example, 
+  #      the number of days when simulating daily rates.
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   An N row by M column matrix of simulated short rates. 
+
+  sim.mat = matrix(nrow = N, ncol = M)
+  for (i in 1:M) {
+    sim.mat[, i] = VasicekSimulation(N, r0, kappa, theta, sigma, dt)
+  }
+  return(sim.mat)
+}
+
+VasicekZeroCouponBondPrice = function(r0, kappa, theta, sigma, years) {
+  # Calculates th zero coupon bond price. 
+  #
+  # Args: 
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   years: The length or maturity of the bond.  
+  #
+  # Returns:
+  #   A decimal price of the bond (i.e. 0.98 for 98). 
+
+  b.vas = (1-exp(-years*kappa)) / kappa
+  a.vas = (theta-sigma^2/(2*kappa^2))*(years-b.vas)+(sigma^2)/(4*kappa)*b.vas^2
+  return(exp(-a.vas-b.vas*r0))
+}
+
+VasicekYieldCurve = function(r0, kappa, theta, sigma, max.maturity) {
+  # Produces a yield curve from the Vasicek model with maturities ranging 
+  # from 1 year to max.maturity.  
+  #
+  # Args: 
+  #   r0: The initial interest rate. 
+  #   kappa: The mean reversion rate. 
+  #   theta: The mean rate or long term rate. 
+  #   sigma: Volatility. 
+  #   max.maturity: Maximum maturity in years (must be integer).
+  #
+  # Returns:
+  #   A decimal price of the bond (i.e. 0.98 for 98). 
+  yields = rep(0, max.maturity)
+  for (y in 1:max.maturity) {
+    yields[y] = log(VasicekZeroCouponBondPrice(r0, kappa, theta, sigma, y))/y
+  }
+  return(yields)
+}
+```
+
+<h4> Calibration Function </h4>
+
+```{r}
+VasicekCalibration = function(data_calib, dt = 1/252) {
+  # Calibrates the vasicek model using the maximum likelihood estimator. 
+  #
+  # Args:
+  #   dt: The change in time between observations. Defaults to 1/252 because
+  #       we assume generation of daily rates and there are 252 trading days 
+  #       per year. 
+  #
+  # Returns:
+  #   A vector of the form c(kappa, theta, sigma, r0), where kappa is the mean
+  #   reversion rate, theta is the long-term rate/mean, sigma is the volatility
+  #   and r0 is the last observed rate.
+  #
+  
+  data = data_calib
+  data = na.omit(data)/100 # FRED quotes 1.00% as 1.00 instead of 0.01 
+  n = length(data)
+  
+  # do the calculations
+  Sx = sum(data[1:(length(data) - 1)])
+  Sy = sum(data[2:length(data)])
+  Sxx = as.numeric(crossprod(data[1:(length(data) - 1)], data[1:(length(data) - 1)]))
+  Sxy = as.numeric(crossprod(data[1:(length(data) - 1)], data[2:length(data)]))
+  Syy = as.numeric(crossprod(data[2:length(data)], data[2:length(data)]))
+  
+  theta  = (Sy * Sxx - Sx * Sxy) / (n* (Sxx - Sxy) - (Sx^2 - Sx*Sy) )
+  kappa = -log((Sxy - theta * Sx - theta * Sy + n * theta^2) /   (Sxx - 2 * theta * Sx + n * theta^2)) / dt
+  a = exp(-kappa*dt)
+  sigmah2 = (Syy - 2 * a * Sxy + a^2 * Sxx - 2 * theta * (1-a) * (Sy - a * Sx) + n * theta^2 * (1 - a)^2)/n
+  sigma = sqrt(sigmah2 * 2 * kappa / (1 - a^2))
+  
+  r0 = data[length(data)]
+  
+  return(c(kappa, theta, sigma, r0))
+}
+```
+
+<h4> Calibration and Parameter definition for the model </h4>
+
+```{r}
+## define model parameters and calibrate
+years = 2018-1987
+N = years * 252 # each year consists of 252 days
+t = (1:N)/252 # for plotting purposes
+
+# calibrate the model
+data_calib = term.structure.princomp$x[,1]
+calibration = VasicekCalibration(data_calib)
+kappa = calibration[1]
+theta = calibration[2]
+sigma = calibration[3]
+r0 = calibration[4]
+
+set.seed(666)
+
+test = VasicekSimulation(N, r0, kappa, theta, sigma)
+plot(t, test, type = 'l')
+
+# test with several (M = 20) simultions
+M = 20
+test.mat = VasicekSimulations(M, N, r0, kappa, theta, sigma)
+```
+
+<h3> 17.5.1. Interest Rate Paths </h3>
+
+```{r}
+# plot the paths
+plot(t, test.mat[, 1], type = 'l', main = 'Short Rates', ylab = 'rt', ylim = c(-max(test.mat)+0.1, max(test.mat)), col = 1)
+for (count in 2:ncol(test.mat)) {
+  lines(t, test.mat[, count], col = count)
+}
+# plot the expected rate and +- 2 standard deviations (theoretical)
+expected = theta + (r0 - theta)*exp(-kappa*t)
+stdev = sqrt( sigma^2 / (2*kappa)*(1 - exp(-2*kappa*t)))
+lines(t, expected, lty=2) 
+lines(t, expected + 2*stdev, lty=2) 
+lines(t, expected - 2*stdev, lty=2)
+abline( h = theta, col = 'red', lty=2)
+arrows(0, theta+0.05, -0.5, theta+0.005, col = "orange",lwd=2)
+text(0, theta+0.06,paste("long term interest level: theta =",sprintf("%.4f",theta)),adj=0)
+```
+
+```{r}
+# price the zero coupon bonds 
+VasicekZeroCouponBondPrice(r0, kappa, theta, sigma, years)
+```
+
+```{r}
+calibration
+```
+
+<h3> Let's repeat the process for some of the tenors </h3>
+
+```{r}
+# calibrate the model
+data_calib = rates$USD1MTD156N
+calibration = VasicekCalibration(data_calib)
+kappa = calibration[1]
+theta = calibration[2]
+sigma = calibration[3]
+r0 = calibration[4]
+set.seed(666)
+# test with several (M = 20) simultions
+M = 20
+test.mat = VasicekSimulations(M, N, r0, kappa, theta, sigma)
+# plot the paths
+plot(t, test.mat[, 1], type = 'l', main = 'Short Rates', ylab = 'rt', ylim = c(-max(test.mat)+0.05, max(test.mat)), col = 1)
+for (count in 2:ncol(test.mat)) {
+  lines(t, test.mat[, count], col = count)
+}
+# plot the expected rate and +- 2 standard deviations (theoretical)
+expected = theta + (r0 - theta)*exp(-kappa*t)
+stdev = sqrt( sigma^2 / (2*kappa)*(1 - exp(-2*kappa*t)))
+lines(t, expected, lty=2) 
+lines(t, expected + 2*stdev, lty=2) 
+lines(t, expected - 2*stdev, lty=2)
+abline( h = theta, col = 'red', lty=2)
+arrows(0, theta+0.05, -0.5, theta+0.005, col = "orange",lwd=2)
+text(0, theta+0.06,paste("long term interest level: theta =",sprintf("%.4f",theta)),adj=0)
+```
+
+<h3> 17.5.2. Yield Curve </h3>
+
+```{r}
+# derive a yield curve 
+# (can do this for several values of r0 to get several curves)
+maturity = years
+yields = VasicekYieldCurve(r0, kappa, theta, sigma, maturity)
+plot(1:maturity, yields, xlab = 'Maturity', type = 'l', ylab = 'Yield', main = 'Yield Curve')
+```
+
+```{r}
+# calibrate the model
+data_calib = rates$USD12MD156N
+calibration = VasicekCalibration(data_calib)
+kappa = calibration[1]
+theta = calibration[2]
+sigma = calibration[3]
+r0 = calibration[4]
+set.seed(666)
+# test with several (M = 20) simultions
+M = 20
+test.mat = VasicekSimulations(M, N, r0, kappa, theta, sigma)
+# plot the paths
+plot(t, test.mat[, 1], type = 'l', main = 'Short Rates', ylab = 'rt', ylim = c(-max(test.mat)+0.05, max(test.mat)), col = 1)
+for (count in 2:ncol(test.mat)) {
+  lines(t, test.mat[, count], col = count)
+}
+# plot the expected rate and +- 2 standard deviations (theoretical)
+expected = theta + (r0 - theta)*exp(-kappa*t)
+stdev = sqrt( sigma^2 / (2*kappa)*(1 - exp(-2*kappa*t)))
+lines(t, expected, lty=2) 
+lines(t, expected + 2*stdev, lty=2) 
+lines(t, expected - 2*stdev, lty=2)
+abline( h = theta, col = 'red', lty=2)
+arrows(0, theta+0.05, -0.5, theta+0.005, col = "orange",lwd=2)
+text(0, theta+0.06,paste("long term interest level: theta =",sprintf("%.4f",theta)),adj=0)
+```
+
+```{r}
+# derive a yield curve 
+# (can do this for several values of r0 to get several curves)
+maturity = years
+yields = VasicekYieldCurve(r0, kappa, theta, sigma, maturity)
+plot(1:maturity, yields, xlab = 'Maturity', type = 'l', ylab = 'Yield', main = 'Yield Curve')
+```
+
+<h3> 17.5.3. Let's calibrate using the 'yuima' library </h3>
+
+<h3> 17.5.3.1. Method </h3>
+
+The Vasicek process is a stochastic process which is stationary, Gaussian, and Markovian.
+
+Over time, the process tends to drift towards its long-term mean: such a process is called mean-reverting.
+
+“The Vasicek process is one of several approaches used to model interest rates, currency exchange rates, and commodity prices stochastically. The parameter \( \mu \) represents the equilibrium or mean value supported by fundamentals; \( \sigma \) the degree of volatility around it caused by shocks, and \( \theta \) the rate by which these shocks dissipate and the variable reverts towards the mean.”
+
+<h3> 17.5.3.2. Calibration using Maximum Likelihood estimates </h3>
+
+We have already written the heler function to get the initial values of the parameters using MLE. Now let's generate 1000 random samples with 100 time periods for interest rate using the parameters from estimate
+
+One simulation, different time different result. And time period still is 100 (“yuimu” default: delta = 1/100).
+
+```{r}
+
+data_calib = rates$USD1MTD156N
+calibration = VasicekCalibration(data_calib)
+kappa = calibration[1]
+theta = calibration[2]
+sigma = calibration[3]
+r0 = calibration[4]
+
+m1 = setModel(drift = theta*(kappa-r0), diffusion = sigma, state.var =  "x", time.var = "t", solve.var = "x", xinit = r0)
+s1 = simulate(m1, true.param = list(kappa, sigma, theta))
+plot(s1)
+```
+
+Increasing the number of simulation to 1000, and time period still is 100 (“yuimu” default: delta = 1/100). Plot the mean of the 1000 simulation result, different time , very similar result.
+
+```{r}
+simnum = 1000
+# specific qunatile (which we can pick any another quantile)
+dist = c(0.31, 0.52, 0.6, 0.7, 0.95)
+newsim = function(i) {
+    simulate(m1, true.param = list(kappa, sigma, theta))@data@original.data
+}
+# newsim(1) simulation 1000 times, each time there are 100 time periods
+sim = sapply(1:simnum, function(x) newsim(x))
+# transfor to time seires format.
+m2 = t(sim)
+rates_sim_1M = apply(m2, 2, mean)
+
+# plot the mean of the 1000 time simulation for the 100 time periods
+plot(rates_sim_1M, type = "l")
+```
+
+```{r}
+# find out the quantile to decribe the distribution
+tile = sapply(1:100, function(x) quantile(m2[, x], dist))
+tile
+```
+
+<h4> We see that we can use ouFit.ML function to estimate the parameter \( \theta \), \( \mu \), and \( \sigma \). And then use the “yuima” package to generate the simulative price vector/matrices. </h4>
+
+<h3> 17.5.4. Can we enhance the model by replacing constant volatility assumption by a stochastic volatility model? </h3>
+
+```{r}
+rate_1M = dataframe$`1M`
+X = as.ts(rates)
+data = X[,1]
+plot(data)
+```
+
+```{r}
+fx = expression( theta[1]+theta[2]*x ) ## drift coefficient of CKLS model
+gx = expression( theta[3]*x^theta[4] ) ## diffusion coefficient of CKLS model
+pmle = eval(formals(fitsde.default)$pmle)
+fitres = lapply(1:4, function(i) fitsde(data,drift=fx,diffusion=gx,pmle=pmle[i], start = list(theta1=1,theta2=1,theta3=1,theta4=1)))
+Coef = data.frame(do.call("cbind",lapply(1:4,function(i) coef(fitres[[i]]))))
+Info = data.frame(do.call("rbind",lapply(1:4,function(i) logLik(fitres[[i]]))), do.call("rbind",lapply(1:4,function(i) AIC(fitres[[i]]))), do.call("rbind",lapply(1:4,function(i) BIC(fitres[[i]]))), row.names=pmle)
+names(Coef) = c(pmle)
+names(Info) = c("logLik","AIC","BIC")
+Coef
+```
+```{r}
+Info
+```
+
+```{r}
+kappa = calibration[1]
+theta = calibration[2]
+c1 = kappa*theta
+c2 = kappa
+sigma = calibration[3]
+r0 = calibration[4]
+
+f = expression( (c1 - c2*x) )
+g = expression( sigma*x )
+mod = snssde1d(drift=f,diffusion=g,x0=r0,M=500, N=length(data),t0=0, T=8326)
+mod
+```
